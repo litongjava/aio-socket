@@ -174,6 +174,78 @@
 
 
 ## 使用示例
+
+### 添加依赖
+```java
+<properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <java.version>1.8</java.version>
+    <maven.compiler.source>${java.version}</maven.compiler.source>
+    <maven.compiler.target>${java.version}</maven.compiler.target>
+    <main.class>HttpServer</main.class>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.litongjava</groupId>
+      <artifactId>aio-socket</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+  </dependencies>
+  <profiles>
+    <!-- 开发环境配置 -->
+    <profile>
+      <id>development</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+      <build>
+        <plugins>
+          <!-- Spring Boot Maven 插件 -->
+          <plugin>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-maven-plugin</artifactId>
+            <version>2.7.4</version>
+            <configuration>
+              <fork>true</fork>
+              <mainClass>${main.class}</mainClass>
+              <excludeGroupIds>org.projectlombok</excludeGroupIds>
+              <arguments>
+                <argument>--mode=dev</argument>
+              </arguments>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
+    <!-- 生产环境配置 -->
+    <profile>
+      <id>production</id>
+      <build>
+        <plugins>
+          <!-- Spring Boot Maven 插件 -->
+          <plugin>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-maven-plugin</artifactId>
+            <version>2.7.4</version>
+            <configuration>
+              <mainClass>${main.class}</mainClass>
+              <excludeGroupIds>org.projectlombok</excludeGroupIds>
+            </configuration>
+            <executions>
+              <execution>
+                <goals>
+                  <goal>repackage</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+```
+### 编写代码
 ```java
 import java.io.IOException;
 import java.net.InetSocketAddress;
