@@ -169,7 +169,31 @@
        }
    });
    ```
+3. **ElasticBufferPage**  
+ElasticBufferPage 由 BufferPagePool 在 pageSize 为 0 时自动创建，旨在支持动态大小的内存分配，而不是预先固定大小的内存页。如果你希望使用 ElasticBufferPage，可以通过如下方式：
 
+1). **创建内存池**  
+   当你构造 BufferPagePool 时，将 pageSize 参数设置为 0，这样内部会实例化 ElasticBufferPage。例如：
+   ```java
+   // 使用 pageSize 为 0 创建内存池，pageNum 表示内存页个数，true 表示使用直接内存
+   BufferPagePool pool = new BufferPagePool(0, 10, true);
+   ```
+
+2). **申请内存页与虚拟内存**  
+   通过内存池申请一个内存页，然后调用其 allocate 方法申请所需大小的虚拟内存（VirtualBuffer）：
+   ```java
+   BufferPage bufferPage = pool.allocateBufferPage();
+   // 申请 1024 字节的虚拟内存
+   VirtualBuffer virtualBuffer = bufferPage.allocate(8192);
+   ```
+
+3). **内存回收**  
+   当你不再使用该虚拟内存时，应调用 VirtualBuffer.clean() 方法，将其归还给 ElasticBufferPage。内部会将该虚拟内存放入回收队列，等待下一次 tryClean() 进行回收：
+   ```java
+   virtualBuffer.clean();
+   ```
+
+这样，ElasticBufferPage 就会自动管理虚拟内存的分配与回收，帮助你减少频繁内存分配带来的性能开销。通常，业务代码无需直接操作 ElasticBufferPage，而是通过 BufferPagePool 获取 BufferPage，然后使用其中的 allocate/clean 接口来进行内存管理。
 ---
 
 
@@ -255,15 +279,23 @@ import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
 import java.util.concurrent.ThreadFactory;
 
+import com.litongjava.enhance.buffer.BufferPage;
+import com.litongjava.enhance.buffer.BufferPagePool;
+import com.litongjava.enhance.buffer.VirtualBuffer;
 import com.litongjava.enhance.channel.EnhanceAsynchronousChannelProvider;
 import com.litongjava.enhance.channel.EnhanceAsynchronousServerSocketChannel;
 
 public class HttpServer {
 
+  private static int cpuNum = Runtime.getRuntime().availableProcessors();
+  private static BufferPagePool pool = new BufferPagePool(0, 1024 * cpuNum, true);
+  private static BufferPage bufferPage = pool.allocateBufferPage();
+
   public static void main(String[] args) throws Exception {
+
     // 创建通道提供者，false 表示非低内存模式
     EnhanceAsynchronousChannelProvider provider = new EnhanceAsynchronousChannelProvider(false);
-    
+
     // 创建一个异步通道组，线程数设为2（根据需求调整）
     AsynchronousChannelGroup group = provider.openAsynchronousChannelGroup(2, new ThreadFactory() {
       @Override
@@ -271,101 +303,112 @@ public class HttpServer {
         return new Thread(r, "http-server-thread");
       }
     });
-    
+
     // 使用提供者创建服务器通道
-    EnhanceAsynchronousServerSocketChannel server = 
-      (EnhanceAsynchronousServerSocketChannel) provider.openAsynchronousServerSocketChannel(group);
+    EnhanceAsynchronousServerSocketChannel server = (EnhanceAsynchronousServerSocketChannel) provider.openAsynchronousServerSocketChannel(group);
+    //
     // 绑定端口，例如 8080，设置 backlog 为 100
     server.bind(new InetSocketAddress(8080), 100);
-    
+
     System.out.println("HTTP Server 正在监听端口 8080 ...");
-    
+
     // 异步接受连接请求
     server.accept(null, new CompletionHandler<AsynchronousSocketChannel, Object>() {
       @Override
       public void completed(AsynchronousSocketChannel channel, Object attachment) {
         // 接收到连接后，立即继续接受下一个连接
         server.accept(null, this);
-        
         // 处理客户端连接
         handleClient(channel);
       }
-      
+
       @Override
       public void failed(Throwable exc, Object attachment) {
         exc.printStackTrace();
       }
     });
-    
+
     // 主线程阻塞，以保证服务器运行
     Thread.currentThread().join();
   }
-  
+
   private static void handleClient(AsynchronousSocketChannel channel) {
-    // 分配 1K 缓冲区用于读取请求
-    ByteBuffer buffer = ByteBuffer.allocate(1024);
-    
-    // 异步读取客户端请求
-    channel.read(buffer,buffer, new CompletionHandler<Integer, Object>() {
+    // 通过 BufferPage 池化获取一个 VirtualBuffer，分配 8192 字节空间
+    VirtualBuffer virtualBuffer = bufferPage.allocate(8192);
+    ByteBuffer buffer = virtualBuffer.buffer();
+
+    // 异步读取客户端请求，将 VirtualBuffer 作为附件传入
+    channel.read(buffer, virtualBuffer, new CompletionHandler<Integer, VirtualBuffer>() {
       @Override
-      public void completed(Integer result, Object attachment) {
-        if (result > 0) {
-          buffer.flip();
-          byte[] bytes = new byte[buffer.remaining()];
-          buffer.get(bytes);
-          
-          // 构造简单的 HTTP 响应
-          String httpResponse = "HTTP/1.1 200 OK\r\n" +
-                                "Content-Length: 13\r\n" +
-                                "Content-Type: text/plain\r\n" +
-                                "\r\n" +
-                                "Hello, World!";
-          ByteBuffer responseBuffer = ByteBuffer.wrap(httpResponse.getBytes());
-          
-          // 异步写响应
-          channel.write(responseBuffer,null,new CompletionHandler<Integer, Object>() {
-            @Override
-            public void completed(Integer result, Object attachment) {
-              // 写完响应后关闭连接
-              try {
-                channel.close();
-              } catch (IOException e) {
-                e.printStackTrace();
+      public void completed(Integer result, VirtualBuffer attachment) {
+        try {
+          if (result > 0) {
+            buffer.flip();
+            byte[] bytes = new byte[buffer.remaining()];
+            buffer.get(bytes);
+            // 此处可以处理客户端请求数据 bytes
+
+            // 构造简单的 HTTP 响应
+            String httpResponse = "HTTP/1.1 200 OK\r\n" + "Content-Length: 13\r\n" + "Content-Type: text/plain\r\n" + "\r\n" + "Hello, World!";
+            ByteBuffer responseBuffer = ByteBuffer.wrap(httpResponse.getBytes());
+
+            // 异步写响应
+            channel.write(responseBuffer, attachment, new CompletionHandler<Integer, VirtualBuffer>() {
+              @Override
+              public void completed(Integer result, VirtualBuffer attachment) {
+                try {
+                  channel.close();
+                } catch (IOException e) {
+                  e.printStackTrace();
+                } finally {
+                  // 写完响应后归还虚拟缓冲区
+                  attachment.clean();
+                }
               }
-            }
-            
-            @Override
-            public void failed(Throwable exc, Object attachment) {
-              exc.printStackTrace();
-              try {
-                channel.close();
-              } catch (IOException e) {
-                e.printStackTrace();
+
+              @Override
+              public void failed(Throwable exc, VirtualBuffer attachment) {
+                exc.printStackTrace();
+                try {
+                  channel.close();
+                } catch (IOException e) {
+                  e.printStackTrace();
+                } finally {
+                  // 出现写异常时也归还虚拟缓冲区
+                  attachment.clean();
+                }
               }
+            });
+          } else {
+            // 未读到数据，则关闭连接
+            try {
+              channel.close();
+            } catch (IOException e) {
+              e.printStackTrace();
             }
-          });
-        } else {
-          // 若没有读到数据，则关闭连接
-          try {
-            channel.close();
-          } catch (IOException e) {
-            e.printStackTrace();
           }
+        } finally {
+          // 不论读取成功与否，归还虚拟缓冲区
+          attachment.clean();
         }
       }
-      
+
       @Override
-      public void failed(Throwable exc, Object attachment) {
+      public void failed(Throwable exc, VirtualBuffer attachment) {
         exc.printStackTrace();
         try {
           channel.close();
         } catch (IOException e) {
           e.printStackTrace();
+        } finally {
+          // 出现读异常时归还虚拟缓冲区
+          attachment.clean();
         }
       }
     });
   }
 }
+
 ```
 ## 并发测试
 ```
