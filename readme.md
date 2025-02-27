@@ -213,7 +213,7 @@ ElasticBufferPage 由 BufferPagePool 在 pageSize 为 0 时自动创建，旨在
     <dependency>
       <groupId>com.litongjava</groupId>
       <artifactId>aio-socket</artifactId>
-      <version>1.0.0</version>
+      <version>1.0.1</version>
     </dependency>
   </dependencies>
   <profiles>
