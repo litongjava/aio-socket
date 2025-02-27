@@ -4,7 +4,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.litongjava</groupId>
   <artifactId>aio-socket</artifactId>
-  <version>1.0.0</version>
+  <version>1.0.1</version>
   <packaging>jar</packaging>
   <name>aio-socket</name>
   <description>高性能IO库</description>
@@ -63,6 +63,19 @@
             </goals>
           </execution>
         </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.3.0</version>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Add-Exports>java.base/sun.nio.ch ALL-UNNAMED</Add-Exports>
+              <Add-Opens>java.base/sun.nio.ch ALL-UNNAMED</Add-Opens>
+            </manifestEntries>
+          </archive>
+        </configuration>
       </plugin>
       <!-- Javadoc -->
       <plugin>
