@@ -1,5 +1,6 @@
 # aio-socket
-
+## 出处
+本项目代码出自[smart-socket](https://github.com/smartboot/smart-socket/tree/master/aio-core/src/main/java/org/smartboot/socket)
 ## aio-socket 简介
 
 **aio-socket** 是一款基于 Java 的异步、非阻塞高性能 IO 库，其设计理念类似于 JDK7 提供的 AIO，但在性能和资源利用上做了优化。该库采用高效的内存管理策略和自定义的线程模型，能够在 1C1G 的硬件条件下支撑上万并发连接。主要特点包括：
