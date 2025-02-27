@@ -3,8 +3,6 @@ package com.litongjava.enhance.buffer;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-import sun.nio.ch.DirectBuffer;
-
 /**
  * ByteBuffer内存页
  */
@@ -80,7 +78,7 @@ public final class ElasticBufferPage extends AbstractBufferPage {
   private void clean0(VirtualBuffer virtualBuffer) {
     if (direct) {
       try {
-        ((DirectBuffer) virtualBuffer.buffer()).cleaner().clean();
+        DirectBufferCleaner.clean(virtualBuffer.buffer());
       } catch (Throwable e) {
         e.printStackTrace();
       }

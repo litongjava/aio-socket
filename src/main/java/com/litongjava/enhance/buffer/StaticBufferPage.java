@@ -244,7 +244,11 @@ public class StaticBufferPage extends AbstractBufferPage {
    */
   public void release() {
     if (buffer.isDirect()) {
-      ((DirectBuffer) buffer).cleaner().clean();
+      try {
+        DirectBufferCleaner.clean(buffer);
+      } catch (Exception e) {
+        e.printStackTrace();
+      }
     }
   }
 
