@@ -74,6 +74,7 @@ public class EnhanceAsynchronousChannelGroup extends AsynchronousChannelGroup {
       }
       while (asynchronousSocketChannel.doWrite())
         ;
+
     });
     commonWorker = new Worker(Selector.open(), selectionKey -> {
       if (selectionKey.isAcceptable()) {

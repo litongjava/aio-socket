@@ -309,54 +309,87 @@ public class EnhanceAsynchronousServerChannel extends AsynchronousSocketChannel 
   }
 
   public final boolean doWrite() {
-    if (writeInterrupted) {
-      writeInterrupted = false;
-      return false;
-    }
     try {
       if (!channelGroup.running) {
         throw new IOException("channelGroup is shutdown");
       }
-      int writeSize = channel.write(writeBuffer);
+      int wrote = channel.write(writeBuffer);
 
-      if (writeSize != 0 || !writeBuffer.hasRemaining()) {
-        CompletionHandler<Number, Object> completionHandler = writeCompletionHandler;
-        Object attach = writeAttachment;
-        resetWrite();
-        writeInterrupted = true;
-        completionHandler.completed(writeSize, attach);
-        if (!writeInterrupted) {
-          return true;
-        }
-        writeInterrupted = false;
-      } else {
-        SelectionKey commonSelectionKey = channel.keyFor(channelGroup.writeWorker.selector);
-        if (commonSelectionKey == null) {
-          channelGroup.writeWorker.addRegister(selector -> {
-            try {
-              channel.register(selector, SelectionKey.OP_WRITE, EnhanceAsynchronousServerChannel.this);
-            } catch (ClosedChannelException e) {
-              writeCompletionHandler.failed(e, writeAttachment);
-            }
-          });
-        } else {
-          EnhanceAsynchronousChannelGroup.interestOps(channelGroup.writeWorker, commonSelectionKey, SelectionKey.OP_WRITE);
-        }
+      // —— 如果还有剩余，就告诉调用者“请再调用一次”——
+      if (writeBuffer.hasRemaining()) {
+        return true;
       }
+
+      // —— 真正写完了，才调用完成回调，并清理状态 ——  
+      CompletionHandler<Number, Object> h = writeCompletionHandler;
+      Object attach = writeAttachment;
+      resetWrite();
+      h.completed(wrote, attach);
+
     } catch (Throwable e) {
-      if (writeCompletionHandler == null) {
+      if (writeCompletionHandler != null) {
+        writeCompletionHandler.failed(e, writeAttachment);
+      } else {
         e.printStackTrace();
         try {
           close();
-        } catch (IOException ioException) {
-          ioException.printStackTrace();
+        } catch (IOException ignore) {
         }
-      } else {
-        writeCompletionHandler.failed(e, writeAttachment);
       }
     }
+    // 返回 false：告诉调用者“我已经结束，不要再调用 doWrite() 了”
     return false;
   }
+
+  //  public final boolean doWrite() {
+  //    if (writeInterrupted) {
+  //      writeInterrupted = false;
+  //      return false;
+  //    }
+  //    try {
+  //      if (!channelGroup.running) {
+  //        throw new IOException("channelGroup is shutdown");
+  //      }
+  //      int writeSize = channel.write(writeBuffer);
+  //
+  //      if (writeSize != 0 || !writeBuffer.hasRemaining()) {
+  //        CompletionHandler<Number, Object> completionHandler = writeCompletionHandler;
+  //        Object attach = writeAttachment;
+  //        resetWrite();
+  //        writeInterrupted = true;
+  //        completionHandler.completed(writeSize, attach);
+  //        if (!writeInterrupted) {
+  //          return true;
+  //        }
+  //        writeInterrupted = false;
+  //      } else {
+  //        SelectionKey commonSelectionKey = channel.keyFor(channelGroup.writeWorker.selector);
+  //        if (commonSelectionKey == null) {
+  //          channelGroup.writeWorker.addRegister(selector -> {
+  //            try {
+  //              channel.register(selector, SelectionKey.OP_WRITE, EnhanceAsynchronousServerChannel.this);
+  //            } catch (ClosedChannelException e) {
+  //              writeCompletionHandler.failed(e, writeAttachment);
+  //            }
+  //          });
+  //        } else {
+  //          EnhanceAsynchronousChannelGroup.interestOps(channelGroup.writeWorker, commonSelectionKey, SelectionKey.OP_WRITE);
+  //        }
+  //      }
+  //    } catch (Throwable e) {
+  //      if (writeCompletionHandler == null) {
+  //        e.printStackTrace();
+  //        try {
+  //          close();
+  //        } catch (IOException ioException) {
+  //          ioException.printStackTrace();
+  //        }
+  //      } else {
+  //        writeCompletionHandler.failed(e, writeAttachment);
+  //      }
+  //    }
+  //    return false;
+  //  }
 
   private void resetWrite() {
     writeAttachment = null;
