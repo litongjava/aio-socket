@@ -59,7 +59,7 @@ public class EnhanceAsynchronousServerChannel extends AsynchronousSocketChannel 
   /**
    * 中断写操作
    */
-  private boolean writeInterrupted;
+  // private boolean writeInterrupted;
 
   private byte readInvoker = EnhanceAsynchronousChannelGroup.MAX_INVOKER;
   private final EnhanceAsynchronousChannelGroup channelGroup;
@@ -400,5 +400,9 @@ public class EnhanceAsynchronousServerChannel extends AsynchronousSocketChannel 
   @Override
   public final boolean isOpen() {
     return channel.isOpen();
+  }
+
+  public SocketChannel getSocketChannel() {
+    return channel;
   }
 }
