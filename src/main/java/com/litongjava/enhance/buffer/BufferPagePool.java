@@ -127,12 +127,12 @@ public final class BufferPagePool {
   public VirtualBuffer allocateRequestByThreadId(final int size) {
     return requestBufferPages[(int) ((Thread.currentThread().getId()) % requestBufferPages.length)].allocate(size);
   }
-  
+
   public VirtualBuffer allocateResponseSequentially(final int size) {
     return responseBufferPages[(cursor.getAndIncrement() & Integer.MAX_VALUE) % requestBufferPages.length]
         .allocate(size);
   }
-  
+
   public VirtualBuffer allocateResponseByThreadId(final int size) {
     return responseBufferPages[(int) ((Thread.currentThread().getId()) % requestBufferPages.length)].allocate(size);
   }

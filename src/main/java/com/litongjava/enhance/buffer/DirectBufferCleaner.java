@@ -40,6 +40,18 @@ public class DirectBufferCleaner {
     }
   }
 
+  public static void clean(boolean direct, ByteBuffer buffer) {
+    if (direct) {
+      try {
+        // 调用DirectBuffer的cleaner来释放本地内存
+        clean(buffer);
+      } catch (Throwable e) {
+        // 捕获并打印可能出现的异常，但不中断程序执行
+        e.printStackTrace();
+      }
+    }
+  }
+
   /**
    * 清理 VirtualBuffer 所关联的直接内存
    * 

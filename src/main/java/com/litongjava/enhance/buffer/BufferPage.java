@@ -48,6 +48,7 @@ public final class BufferPage {
    * @throws UnsupportedOperationException 当申请大小为0时抛出异常
    */
   public VirtualBuffer allocate(final int size) {
+
     if (size == 0) {
       throw new UnsupportedOperationException("cannot allocate zero bytes");
     }
@@ -108,7 +109,8 @@ public final class BufferPage {
     if (direct) {
       try {
         // 调用DirectBuffer的cleaner来释放本地内存
-        DirectBufferCleaner.clean(virtualBuffer.buffer());
+        ByteBuffer buffer = virtualBuffer.buffer();
+        DirectBufferCleaner.clean(buffer);
       } catch (Throwable e) {
         // 捕获并打印可能出现的异常，但不中断程序执行
         e.printStackTrace();
