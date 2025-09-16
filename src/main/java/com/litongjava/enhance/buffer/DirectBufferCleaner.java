@@ -11,7 +11,7 @@ import sun.nio.ch.DirectBuffer;
 public class DirectBufferCleaner {
 
   // 获取当前 JDK 的主版本号
-  private static final int JAVA_MAJOR_VERSION = getJavaMajorVersion();
+  public static final int JAVA_MAJOR_VERSION = getJavaMajorVersion();
 
   // Java 9及以上使用的 Unsafe 实例和 invokeCleaner 方法
   private static final Unsafe UNSAFE;
@@ -64,10 +64,7 @@ public class DirectBufferCleaner {
    */
   private static int getJavaMajorVersion() {
     String version = System.getProperty("java.specification.version");
-    if (version.startsWith("1.")) {
-      return Integer.parseInt(version.substring(2));
-    } else {
-      return Integer.parseInt(version);
-    }
+    return version.startsWith("1.") ? Integer.parseInt(version.split("\\.")[1])
+        : Integer.parseInt(version.split("\\.")[0]);
   }
 }
