@@ -1,7 +1,6 @@
 package com.litongjava.enhance.buffer;
 
 import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -14,15 +13,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @version V1.0 , 2018/10/31
  */
 public final class BufferPagePool {
-  /**
-   * 守护线程池，用于在空闲时期定期回收内存资源。 使用单线程的ScheduledThreadPoolExecutor，并将线程设置为守护线程，
-   * 这样在JVM退出时，线程会自动终止，不会阻止程序的正常退出。
-   */
-  private static final ScheduledThreadPoolExecutor BUFFER_POOL_CLEAN = new ScheduledThreadPoolExecutor(1, r -> {
-    Thread thread = new Thread(r, "BufferPoolClean");
-    thread.setDaemon(true);
-    return thread;
-  });
   /**
    * 默认的BufferPagePool实例，使用1个堆内存页。 提供给不需要自定义内存池配置的场景使用，简化API使用。
    */
@@ -64,7 +54,7 @@ public final class BufferPagePool {
     }
     // 如果内存页数量大于0，则启动定时回收任务
     if (pageNum > 0) {
-      future = BUFFER_POOL_CLEAN.scheduleWithFixedDelay(new Runnable() {
+      future = GlobalScheduler.INSTANCE.scheduleWithFixedDelay(new Runnable() {
         @Override
         public void run() {
           if (enabled) {
@@ -157,5 +147,31 @@ public final class BufferPagePool {
       logger += "\r\n" + page.toString();
     }
     return logger;
+  }
+
+  public BufferPage[] getRequestBufferPages() {
+    return requestBufferPages;
+  }
+
+  public BufferPage[] getResponseBufferPages() {
+    return responseBufferPages;
+  }
+
+  public BufferMemoryStat[] getRequestBufferMemoryStat() {
+    BufferMemoryStat[] bufferMemoryStats = new BufferMemoryStat[requestBufferPages.length];
+    for (int i = 0; i < requestBufferPages.length; i++) {
+      BufferMemoryStat stat = requestBufferPages[i].getStat();
+      bufferMemoryStats[i] = stat;
+    }
+    return bufferMemoryStats;
+  }
+
+  public BufferMemoryStat[] getResponseBufferMemoryStat() {
+    BufferMemoryStat[] bufferMemoryStats = new BufferMemoryStat[responseBufferPages.length];
+    for (int i = 0; i < responseBufferPages.length; i++) {
+      BufferMemoryStat stat = responseBufferPages[i].getStat();
+      bufferMemoryStats[i] = stat;
+    }
+    return bufferMemoryStats;
   }
 }

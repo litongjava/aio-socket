@@ -2,6 +2,7 @@ package com.litongjava.enhance.buffer;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * ByteBuffer内存页类，负责管理和分配ByteBuffer内存。
@@ -47,6 +48,10 @@ public final class BufferPage {
    * @return 分配的虚拟内存对象
    * @throws UnsupportedOperationException 当申请大小为0时抛出异常
    */
+  private final LongAdder statReuseHit = new LongAdder(); // 复用命中（容量+direct一致）
+  private final LongAdder statNewAlloc = new LongAdder(); // 新分配次数
+  private final LongAdder statCleanCount = new LongAdder(); // 实际清理次数
+
   public VirtualBuffer allocate(final int size) {
 
     if (size == 0) {
@@ -58,6 +63,7 @@ public final class BufferPage {
     VirtualBuffer virtualBuffer = cleanBuffers.poll();
     // 如果找到了一个容量正好等于请求大小的VirtualBuffer，则重置并返回它
     if (virtualBuffer != null && virtualBuffer.buffer().capacity() == size) {
+      statReuseHit.increment();
       virtualBuffer.reset();
       return virtualBuffer;
     }
@@ -67,6 +73,7 @@ public final class BufferPage {
       clean0(virtualBuffer);
     }
     // 创建一个新的VirtualBuffer，根据direct标志决定使用直接缓冲区还是堆缓冲区
+    statNewAlloc.increment();
     return new VirtualBuffer(this, direct ? ByteBuffer.allocateDirect(size) : ByteBuffer.allocate(size));
   }
 
@@ -104,19 +111,19 @@ public final class BufferPage {
    *
    * @param virtualBuffer 需要回收的虚拟缓冲区
    */
-  private void clean0(VirtualBuffer virtualBuffer) {
-    // 只有直接缓冲区需要显式释放
-    if (direct) {
-      try {
-        // 调用DirectBuffer的cleaner来释放本地内存
-        ByteBuffer buffer = virtualBuffer.buffer();
-        DirectBufferCleaner.clean(buffer);
-      } catch (Throwable e) {
-        // 捕获并打印可能出现的异常，但不中断程序执行
-        e.printStackTrace();
+  private void clean0(VirtualBuffer vb) {
+    ByteBuffer buffer = vb.buffer();
+    if (buffer != null) {
+      statCleanCount.increment();
+      if (buffer.isDirect()) {
+        try {
+          DirectBufferCleaner.clean(buffer);
+        } catch (Throwable e) {
+          // 释放失败不影响后续逻辑
+          e.printStackTrace();
+        }
       }
     }
-    // 对于堆内存缓冲区，不需要特殊处理，由GC自动回收
   }
 
   /**
@@ -133,6 +140,15 @@ public final class BufferPage {
       }
     }
     // 对于堆内存缓冲区，不需要特殊处理，由GC自动回收
+  }
+
+  public BufferMemoryStat getStat() {
+    BufferMemoryStat memoryStat = new BufferMemoryStat();
+    memoryStat.statNewAlloc = statNewAlloc.longValue();
+    memoryStat.statCleanCount = statCleanCount.longValue();
+    memoryStat.statReuseHit = statReuseHit.longValue();
+    memoryStat.bufferSize = cleanBuffers.size();
+    return memoryStat;
   }
 
   /**
