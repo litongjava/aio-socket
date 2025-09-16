@@ -7,6 +7,7 @@ import java.nio.ByteBuffer;
 import sun.misc.Unsafe;
 import sun.nio.ch.DirectBuffer;
 
+@SuppressWarnings("restriction")
 public class DirectBufferCleaner {
 
   // 获取当前 JDK 的主版本号
@@ -41,6 +42,7 @@ public class DirectBufferCleaner {
 
   /**
    * 清理 VirtualBuffer 所关联的直接内存
+   * 
    * @param virtualBuffer 包含直接 ByteBuffer 的包装类
    */
   public static void clean(ByteBuffer buffer) {
@@ -58,8 +60,7 @@ public class DirectBufferCleaner {
   }
 
   /**
-   * 获取 Java 主版本号
-   * 如 "1.8" 返回 8，"9" 返回 9，"11" 返回 11
+   * 获取 Java 主版本号 如 "1.8" 返回 8，"9" 返回 9，"11" 返回 11
    */
   private static int getJavaMajorVersion() {
     String version = System.getProperty("java.specification.version");
