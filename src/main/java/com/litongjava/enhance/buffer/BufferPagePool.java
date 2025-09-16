@@ -54,7 +54,7 @@ public final class BufferPagePool {
     }
     // 如果内存页数量大于0，则启动定时回收任务
     if (pageNum > 0) {
-      future = GlobalScheduler.INSTANCE.scheduleWithFixedDelay(new Runnable() {
+      future = GlobalScheduler.scheduleWithFixedDelay(new Runnable() {
         @Override
         public void run() {
           if (enabled) {

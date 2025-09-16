@@ -1,6 +1,8 @@
 package com.litongjava.enhance.buffer;
 
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 public class GlobalScheduler {
   public static final ScheduledThreadPoolExecutor INSTANCE = new ScheduledThreadPoolExecutor(
@@ -9,4 +11,9 @@ public class GlobalScheduler {
         t.setDaemon(true);
         return t;
       });
+
+  public static ScheduledFuture<?> scheduleWithFixedDelay(Runnable command, long initialDelay, long delay,
+      TimeUnit unit) {
+    return INSTANCE.scheduleWithFixedDelay(command, initialDelay, delay, unit);
+  }
 }
