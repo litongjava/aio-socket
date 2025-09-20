@@ -32,7 +32,8 @@ public final class EnhanceAsynchronousChannelProvider extends AsynchronousChanne
 
   @Override
   public AsynchronousChannelGroup openAsynchronousChannelGroup(int nThreads, ThreadFactory threadFactory) throws IOException {
-    return new EnhanceAsynchronousChannelGroup(this, new ThreadPoolExecutor(nThreads, nThreads, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(nThreads), threadFactory), nThreads);
+    ThreadPoolExecutor readExecutorService = new ThreadPoolExecutor(nThreads, nThreads, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(nThreads), threadFactory);
+    return new EnhanceAsynchronousChannelGroup(this, readExecutorService, nThreads);
   }
 
   @Override
