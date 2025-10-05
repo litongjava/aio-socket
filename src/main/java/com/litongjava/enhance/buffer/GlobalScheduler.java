@@ -7,7 +7,7 @@ import java.util.concurrent.TimeUnit;
 public class GlobalScheduler {
   public static final ScheduledThreadPoolExecutor INSTANCE = new ScheduledThreadPoolExecutor(
       Math.max(2, Runtime.getRuntime().availableProcessors() / 2), r -> {
-        Thread t = new Thread(r, "aio-scheduler");
+        Thread t = new Thread(r, "global-scheduler");
         t.setDaemon(true);
         return t;
       });
@@ -17,7 +17,7 @@ public class GlobalScheduler {
     return INSTANCE.scheduleWithFixedDelay(command, initialDelay, delay, unit);
   }
 
-  public ScheduledFuture<?> scheduleAtFixedRate(Runnable command, long initialDelay, long period, TimeUnit unit) {
+  public static ScheduledFuture<?> scheduleAtFixedRate(Runnable command, long initialDelay, long period, TimeUnit unit) {
     return INSTANCE.scheduleWithFixedDelay(command, initialDelay, period, unit);
   }
 }
