@@ -17,7 +17,13 @@ public class GlobalScheduler {
     return INSTANCE.scheduleWithFixedDelay(command, initialDelay, delay, unit);
   }
 
-  public static ScheduledFuture<?> scheduleAtFixedRate(Runnable command, long initialDelay, long period, TimeUnit unit) {
+  public static ScheduledFuture<?> scheduleAtFixedRate(Runnable command, long initialDelay, long period,
+      TimeUnit unit) {
     return INSTANCE.scheduleWithFixedDelay(command, initialDelay, period, unit);
+  }
+
+  /** 停止任务（在应用关闭或热重载时调用） */
+  public static void stop() {
+    INSTANCE.shutdownNow();
   }
 }
