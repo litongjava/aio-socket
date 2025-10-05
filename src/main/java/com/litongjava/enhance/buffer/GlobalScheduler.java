@@ -16,4 +16,8 @@ public class GlobalScheduler {
       TimeUnit unit) {
     return INSTANCE.scheduleWithFixedDelay(command, initialDelay, delay, unit);
   }
+
+  public ScheduledFuture<?> scheduleAtFixedRate(Runnable command, long initialDelay, long period, TimeUnit unit) {
+    return INSTANCE.scheduleWithFixedDelay(command, initialDelay, period, unit);
+  }
 }
