@@ -1,4 +1,4 @@
-package com.litongjava.enhance.channel;
+package nexus.io.enhance.channel;
 
 import java.io.IOException;
 import java.net.SocketAddress;

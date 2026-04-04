@@ -1,4 +1,4 @@
-package com.litongjava.enhance.buffer;
+package nexus.io.enhance.buffer;
 
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
