@@ -29,6 +29,41 @@ import java.util.concurrent.TimeUnit;
  * @version V1.0 , 2020/5/25
  */
 public final class EnhanceAsynchronousChannelProvider extends AsynchronousChannelProvider {
+
+  /** Reports isolated operation errors and worker lifecycle failures. */
+  public interface WorkerErrorHandler {
+    /**
+     * @param where operation name; loop/select-closed indicate worker termination
+     * @param throwable original error
+     */
+    void onWorkerError(String where, Throwable throwable);
+  }
+
+  private static final WorkerErrorHandler DEFAULT_WORKER_ERROR_HANDLER = (where, throwable) -> {
+    System.err.println("[aio-socket] worker error at " + where + ": " + throwable);
+    throwable.printStackTrace();
+  };
+
+  private static volatile WorkerErrorHandler workerErrorHandler = DEFAULT_WORKER_ERROR_HANDLER;
+
+  /** Sets the process-wide error sink. Passing null restores stderr logging. */
+  public static void setWorkerErrorHandler(WorkerErrorHandler handler) {
+    workerErrorHandler = handler == null ? DEFAULT_WORKER_ERROR_HANDLER : handler;
+  }
+
+  /** Reports errors without allowing a logging failure to stop the IO loop. */
+  static void reportWorkerError(String where, Throwable throwable) {
+    try {
+      workerErrorHandler.onWorkerError(where, throwable);
+    } catch (Throwable ignored) {
+      try {
+        DEFAULT_WORKER_ERROR_HANDLER.onWorkerError(where, throwable);
+      } catch (Throwable fallbackError) {
+        // No further logging is possible; preserve the IO exception boundary.
+      }
+    }
+  }
+
   public static final ThreadLocal<Boolean> SYNC_READ_FLAG = ThreadLocal.withInitial(() -> false);
   public static final CompletionHandler<Integer, CompletableFuture<Integer>> SYNC_READ_HANDLER = new CompletionHandler<Integer, CompletableFuture<Integer>>() {
     @Override

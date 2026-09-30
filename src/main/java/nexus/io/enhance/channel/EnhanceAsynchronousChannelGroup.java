@@ -2,6 +2,7 @@ package nexus.io.enhance.channel;
 
 import java.io.IOException;
 import java.nio.channels.AsynchronousChannelGroup;
+import java.nio.channels.ClosedSelectorException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.spi.AsynchronousChannelProvider;
@@ -126,8 +127,13 @@ class EnhanceAsynchronousChannelGroup extends AsynchronousChannelGroup {
         System.err.println("remove write ops error");
         e.printStackTrace();
       } finally {
-        while (asynchronousSocketChannel.doWrite())
-          ;
+        // Isolate failures from the shared write worker.
+        try {
+          while (asynchronousSocketChannel.doWrite())
+            ;
+        } catch (Throwable throwable) {
+          EnhanceAsynchronousChannelProvider.reportWorkerError("write", throwable);
+        }
       }
     });
     commonWorker = new Worker(Selector.open(), selectionKey -> {
@@ -143,8 +149,9 @@ class EnhanceAsynchronousChannelGroup extends AsynchronousChannelGroup {
         removeOps(selectionKey, SelectionKey.OP_READ);
         asynchronousSocketChannel.doRead(true, false);
       } else {
-        throw new IllegalStateException(
-            "unexpect callback,key valid:" + selectionKey.isValid() + " ,interestOps:" + selectionKey.interestOps());
+        // Report unexpected readiness without terminating the common worker.
+        EnhanceAsynchronousChannelProvider.reportWorkerError("common-unexpected-key", new IllegalStateException(
+            "unexpect callback,key valid:" + selectionKey.isValid() + " ,interestOps:" + selectionKey.interestOps()));
       }
     });
 
@@ -317,13 +324,23 @@ class EnhanceAsynchronousChannelGroup extends AsynchronousChannelGroup {
           // 处理待注册的事件
           Consumer<Selector> selectorConsumer;
           while ((selectorConsumer = consumers.poll()) != null) {
-            selectorConsumer.accept(selector);
+            try {
+              selectorConsumer.accept(selector);
+            } catch (Throwable throwable) {
+              // A failed registration must not terminate the worker.
+              EnhanceAsynchronousChannelProvider.reportWorkerError("register", throwable);
+            }
           }
           // 阻塞等待IO事件
           selector.select();
           // 处理已就绪的IO事件
           for (SelectionKey key : keySet) {
-            consumer.accept(key);
+            // Isolate each event so an application callback cannot stop the worker.
+            try {
+              consumer.accept(key);
+            } catch (Throwable throwable) {
+              EnhanceAsynchronousChannelProvider.reportWorkerError("event", throwable);
+            }
           }
           keySet.clear();
         }
@@ -332,19 +349,20 @@ class EnhanceAsynchronousChannelGroup extends AsynchronousChannelGroup {
           try {
             shutdownCallback.accept(key);
           } catch (Throwable throwable) {
-            throwable.printStackTrace();
+            EnhanceAsynchronousChannelProvider.reportWorkerError("shutdown", throwable);
           }
         });
+      } catch (ClosedSelectorException e) {
+        // A closed selector cannot continue dispatching events.
+        EnhanceAsynchronousChannelProvider.reportWorkerError("select-closed", e);
       } catch (Throwable e) {
-        if (running) {
-          System.err.println("worker thread error");
-        }
-        e.printStackTrace();
+        // Errors outside individual operations terminate this loop.
+        EnhanceAsynchronousChannelProvider.reportWorkerError("loop", e);
       } finally {
         try {
           selector.close();
         } catch (IOException e) {
-          e.printStackTrace();
+          EnhanceAsynchronousChannelProvider.reportWorkerError("close", e);
         }
       }
     }

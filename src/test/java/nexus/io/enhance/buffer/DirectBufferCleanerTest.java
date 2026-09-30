@@ -1,8 +1,6 @@
-package com.litongjava.enhance.buffer;
+package nexus.io.enhance.buffer;
 
 import org.junit.Test;
-
-import nexus.io.enhance.buffer.DirectBufferCleaner;
 
 public class DirectBufferCleanerTest {
 

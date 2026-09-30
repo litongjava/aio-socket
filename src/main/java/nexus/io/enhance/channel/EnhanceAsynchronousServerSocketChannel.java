@@ -6,12 +6,12 @@ import java.net.SocketOption;
 import java.nio.channels.AcceptPendingException;
 import java.nio.channels.AsynchronousServerSocketChannel;
 import java.nio.channels.AsynchronousSocketChannel;
-import java.nio.channels.ClosedChannelException;
 import java.nio.channels.CompletionHandler;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.Set;
+import java.util.Objects;
 import java.util.concurrent.Future;
 
 /**
@@ -151,6 +151,7 @@ public final class EnhanceAsynchronousServerSocketChannel extends AsynchronousSe
    */
   @Override
   public <A> void accept(A attachment, CompletionHandler<AsynchronousSocketChannel, ? super A> handler) {
+    Objects.requireNonNull(handler, "handler");
     if (acceptPending) {
       throw new AcceptPendingException();
     }
@@ -169,42 +170,93 @@ public final class EnhanceAsynchronousServerSocketChannel extends AsynchronousSe
    * 4. 管理选择键的注册
    */
   public void doAccept() {
+    if (!acceptPending) {
+      clearAcceptInterest();
+      return;
+    }
     try {
       SocketChannel socketChannel = null;
-      if (acceptInvoker++ < EnhanceAsynchronousChannelGroup.MAX_INVOKER) {
-        socketChannel = serverSocketChannel.accept();
-      }
-      if (socketChannel != null) {
-        EnhanceAsynchronousSocketChannel asynchronousSocketChannel = new EnhanceAsynchronousSocketChannel(enhanceAsynchronousChannelGroup,
-            socketChannel, lowMemory);
-        // 这行代码不要乱动
+      EnhanceAsynchronousSocketChannel accepted;
+      // Notify failed only for accept IO errors. User callbacks have a separate exception boundary.
+      try {
+        if (acceptInvoker++ < EnhanceAsynchronousChannelGroup.MAX_INVOKER) {
+          socketChannel = serverSocketChannel.accept();
+        }
+        if (socketChannel == null) {
+          if (selectionKey == null) {
+            enhanceAsynchronousChannelGroup.commonWorker.addRegister(selector -> {
+              try {
+                selectionKey = serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT,
+                    EnhanceAsynchronousServerSocketChannel.this);
+              } catch (Throwable error) {
+                failAccept(error);
+              }
+            });
+          } else {
+            EnhanceAsynchronousChannelGroup.interestOps(enhanceAsynchronousChannelGroup.commonWorker,
+                selectionKey, SelectionKey.OP_ACCEPT);
+          }
+          return;
+        }
+        accepted = new EnhanceAsynchronousSocketChannel(enhanceAsynchronousChannelGroup, socketChannel, lowMemory);
         socketChannel.configureBlocking(false);
         socketChannel.finishConnect();
-        CompletionHandler<AsynchronousSocketChannel, Object> completionHandler = acceptCompletionHandler;
-        Object attach = attachment;
-        resetAccept();
-        completionHandler.completed(asynchronousSocketChannel, attach);
-        if (!acceptPending && selectionKey != null) {
-          EnhanceAsynchronousChannelGroup.removeOps(selectionKey, SelectionKey.OP_ACCEPT);
+      } catch (Throwable error) {
+        if (socketChannel != null) {
+          try {
+            socketChannel.close();
+          } catch (Throwable closeError) {
+            error.addSuppressed(closeError);
+          }
+        }
+        failAccept(error);
+        return;
+      }
+
+      CompletionHandler<AsynchronousSocketChannel, Object> handler = acceptCompletionHandler;
+      Object attach = attachment;
+      resetAccept();
+      // Disarm this operation before the callback can rearm the next accept.
+      clearAcceptInterest();
+      try {
+        handler.completed(accepted, attach);
+      } catch (Throwable error) {
+        EnhanceAsynchronousChannelProvider.reportWorkerError("accept-callback", error);
+        // Release this connection without failing or resetting an accept rearmed by the callback.
+        try {
+          accepted.close();
+        } catch (Throwable closeError) {
+          EnhanceAsynchronousChannelProvider.reportWorkerError("accept-close", closeError);
         }
       }
-      // 首次注册selector
-      else if (selectionKey == null) {
-        enhanceAsynchronousChannelGroup.commonWorker.addRegister(selector -> {
-          try {
-            selectionKey = serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT, EnhanceAsynchronousServerSocketChannel.this);
-//                        selectionKey.attach(EnhanceAsynchronousServerSocketChannel.this);
-          } catch (ClosedChannelException e) {
-            acceptCompletionHandler.failed(e, attachment);
-          }
-        });
-      } else {
-        EnhanceAsynchronousChannelGroup.interestOps(enhanceAsynchronousChannelGroup.commonWorker, selectionKey, SelectionKey.OP_ACCEPT);
-      }
-    } catch (IOException e) {
-      this.acceptCompletionHandler.failed(e, attachment);
     } finally {
       acceptInvoker = 0;
+    }
+  }
+
+  private void failAccept(Throwable error) {
+    CompletionHandler<AsynchronousSocketChannel, Object> handler = acceptCompletionHandler;
+    Object attach = attachment;
+    resetAccept();
+    clearAcceptInterest();
+    if (handler == null) {
+      EnhanceAsynchronousChannelProvider.reportWorkerError("accept", error);
+      return;
+    }
+    try {
+      handler.failed(error, attach);
+    } catch (Throwable callbackError) {
+      EnhanceAsynchronousChannelProvider.reportWorkerError("accept-failed", callbackError);
+    }
+  }
+
+  private void clearAcceptInterest() {
+    try {
+      if (selectionKey != null) {
+        EnhanceAsynchronousChannelGroup.removeOps(selectionKey, SelectionKey.OP_ACCEPT);
+      }
+    } catch (Throwable error) {
+      EnhanceAsynchronousChannelProvider.reportWorkerError("accept-interest", error);
     }
   }
 

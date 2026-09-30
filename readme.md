@@ -201,7 +201,7 @@ ElasticBufferPage 由 BufferPagePool 在 pageSize 为 0 时自动创建，旨在
 ## 使用示例
 
 ### 添加依赖
-```java
+```xml
 <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <java.version>1.8</java.version>
@@ -211,9 +211,10 @@ ElasticBufferPage 由 BufferPagePool 在 pageSize 为 0 时自动创建，旨在
   </properties>
   <dependencies>
     <dependency>
-      <groupId>com.litongjava</groupId>
+      <groupId>nexus.io</groupId>
       <artifactId>aio-socket</artifactId>
-      <version>1.0.1</version>
+      <!-- 版本号填你实际使用的发布版本 -->
+      <version>${aio-socket.version}</version>
     </dependency>
   </dependencies>
   <profiles>
@@ -280,11 +281,11 @@ import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
 import java.util.concurrent.ThreadFactory;
 
-import com.litongjava.enhance.buffer.BufferPage;
-import com.litongjava.enhance.buffer.BufferPagePool;
-import com.litongjava.enhance.buffer.VirtualBuffer;
-import com.litongjava.enhance.channel.EnhanceAsynchronousChannelProvider;
-import com.litongjava.enhance.channel.EnhanceAsynchronousServerSocketChannel;
+import nexus.io.enhance.buffer.BufferPage;
+import nexus.io.enhance.buffer.BufferPagePool;
+import nexus.io.enhance.buffer.VirtualBuffer;
+import nexus.io.enhance.channel.EnhanceAsynchronousChannelProvider;
+import nexus.io.enhance.channel.EnhanceAsynchronousServerSocketChannel;
 
 public class HttpServer {
 
