@@ -13,6 +13,9 @@ import java.nio.channels.ReadPendingException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.ShutdownChannelGroupException;
 import java.nio.channels.SocketChannel;
+import java.nio.channels.FileChannel;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.nio.channels.WritePendingException;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -107,19 +110,16 @@ public class EnhanceAsynchronousSocketChannel extends AsynchronousSocketChannel 
    */
   private final boolean lowMemory;
 
-  /**
-   * 写操作中断标志
-   * 用于控制写操作的中断状态，防止写操作重入
-   * true表示写操作被中断，false表示可以继续写入
-   */
-  private boolean writeInterrupted;
-
-  /**
-   * 读操作调用计数器
-   * 用于限制连续读取的次数，避免某个连接持续占用读取线程
-   * 达到最大值后会暂停读取，等待下一次事件触发
-   */
-  private byte readInvoker = EnhanceAsynchronousChannelGroup.MAX_INVOKER;
+  // Operation state is detached under its lock; callbacks run outside both locks.
+  private final Object readLock = new Object();
+  private final Object writeLock = new Object();
+  private final AtomicInteger readWork = new AtomicInteger();
+  private final AtomicInteger writeWork = new AtomicInteger();
+  private long readGeneration;
+  private long writeGeneration;
+  private FileChannel writeFile;
+  private long writeFilePosition;
+  private long writeFileCount;
 
   public EnhanceAsynchronousSocketChannel(EnhanceAsynchronousChannelGroup group, SocketChannel channel, boolean lowMemory)
       throws IOException {
@@ -143,9 +143,8 @@ public class EnhanceAsynchronousSocketChannel extends AsynchronousSocketChannel 
     } catch (IOException e) {
       exception = e;
     }
-    if (readCompletionHandler != null) {
-      doRead(true, false);
-    }
+    failRead(new ClosedChannelException(), -1);
+    failWrite(new ClosedChannelException(), -1);
     if (readSelectionKey != null) {
       readSelectionKey.cancel();
       readSelectionKey = null;
@@ -269,14 +268,23 @@ public class EnhanceAsynchronousSocketChannel extends AsynchronousSocketChannel 
   }
 
   private <V extends Number, A> void read0(ByteBuffer readBuffer, A attachment, CompletionHandler<V, ? super A> handler) {
-    if (this.readCompletionHandler != null) {
-      throw new ReadPendingException();
+    Objects.requireNonNull(handler, "handler");
+    if (!lowMemory) Objects.requireNonNull(readBuffer, "buffer");
+    synchronized (readLock) {
+      if (this.readCompletionHandler != null) throw new ReadPendingException();
+      this.readBuffer = readBuffer;
+      this.readAttachment = attachment;
+      this.readCompletionHandler = (CompletionHandler<Number, Object>) handler;
+      readGeneration++;
     }
-    this.readBuffer = readBuffer;
-    this.readAttachment = attachment;
-    this.readCompletionHandler = (CompletionHandler<Number, Object>) handler;
-    boolean syncRead = EnhanceAsynchronousChannelProvider.SYNC_READ_FLAG.get();
-    doRead(syncRead, syncRead);
+    if (!channel.isOpen()) {
+      failRead(new ClosedChannelException(), -1);
+    } else if (readWork.get() == 0) {
+      // Initial reads run on the read worker, never on the accept or caller thread.
+      readWorker.addRegister(selector -> doRead(true, false));
+    } else {
+      doRead(false, false);
+    }
   }
 
   @Override
@@ -306,14 +314,37 @@ public class EnhanceAsynchronousSocketChannel extends AsynchronousSocketChannel 
   }
 
   private <V extends Number, A> void write0(ByteBuffer writeBuffer, A attachment, CompletionHandler<V, ? super A> handler) {
-    if (this.writeCompletionHandler != null) {
-      throw new WritePendingException();
+    Objects.requireNonNull(handler, "handler");
+    Objects.requireNonNull(writeBuffer, "buffer");
+    synchronized (writeLock) {
+      if (this.writeCompletionHandler != null) throw new WritePendingException();
+      this.writeBuffer = writeBuffer;
+      this.writeAttachment = attachment;
+      this.writeCompletionHandler = (CompletionHandler<Number, Object>) handler;
+      this.writeFile = null;
+      writeGeneration++;
     }
-    this.writeBuffer = writeBuffer;
-    this.writeAttachment = attachment;
-    this.writeCompletionHandler = (CompletionHandler<Number, Object>) handler;
-    while (doWrite())
-      ;
+    doWrite();
+  }
+
+  /** Transfers a file region without copying its plaintext into a user-space buffer. */
+  @SuppressWarnings("unchecked")
+  public <A> void transfer(FileChannel file, long position, long count, A attachment,
+      CompletionHandler<Long, ? super A> handler) {
+    Objects.requireNonNull(file, "file");
+    Objects.requireNonNull(handler, "handler");
+    if (position < 0 || count < 0) throw new IllegalArgumentException("Invalid file region");
+    synchronized (writeLock) {
+      if (writeCompletionHandler != null) throw new WritePendingException();
+      writeFile = file;
+      writeFilePosition = position;
+      writeFileCount = count;
+      writeBuffer = null;
+      writeAttachment = attachment;
+      writeCompletionHandler = (CompletionHandler<Number, Object>) (CompletionHandler<?, ?>) handler;
+      writeGeneration++;
+    }
+    doWrite();
   }
 
   @Override
@@ -343,97 +374,75 @@ public class EnhanceAsynchronousSocketChannel extends AsynchronousSocketChannel 
    * @param direct 是否直接读取，true表示立即读取，false表示通过事件触发读取
    */
   public final void doRead(boolean direct, boolean switchThread) {
+    if (readWork.getAndIncrement() != 0) return;
+    int missed = 1;
+    do {
+      Runnable completion;
+      synchronized (readLock) { completion = readOnce(direct); }
+      if (completion != null) completion.run();
+      missed = readWork.addAndGet(-missed);
+    } while (missed != 0);
+  }
+
+  private Runnable readOnce(boolean direct) {
+    if (readCompletionHandler == null) return null;
+    final long generation = readGeneration;
     try {
-      if (readCompletionHandler == null) {
-        return;
+      if (!channel.isOpen()) throw new ClosedChannelException();
+      if (lowMemory && readBuffer == null && direct) {
+        return takeReadCompletion(EnhanceAsynchronousChannelProvider.READABLE_SIGNAL, null);
       }
-      // 处理Future调用被取消的情况
-//            if (readCompletionHandler instanceof FutureCompletionHandler && ((FutureCompletionHandler) readCompletionHandler).isDone()) {
-//                EnhanceAsynchronousChannelGroup.removeOps(readSelectionKey, SelectionKey.OP_READ);
-//                resetRead();
-//                return;
-//            }
-      // 低内存模式下的特殊处理：当没有缓冲区时，直接返回可读信号
-      if (lowMemory && direct && readBuffer == null) {
-        CompletionHandler<Number, Object> completionHandler = readCompletionHandler;
-        Object attach = readAttachment;
-        resetRead();
-        completionHandler.completed(EnhanceAsynchronousChannelProvider.READABLE_SIGNAL, attach);
-        return;
+      int size = readBuffer == null ? 0 : channel.read(readBuffer);
+      if (size != 0 || (readBuffer != null && !readBuffer.hasRemaining())) {
+        return takeReadCompletion(size, null);
       }
-      // 判断是否需要直接读取：直接调用或未达到最大调用次数
-      boolean directRead = direct || readInvoker++ < EnhanceAsynchronousChannelGroup.MAX_INVOKER;
-
-      int readSize = 0;
-      boolean hasRemain = true;
-      if (directRead) {
-        readSize = channel.read(readBuffer);
-        hasRemain = readBuffer.hasRemaining();
-        // 当readBuffer未填充满，我们推测当前管道中大概率没有可读数据，下一次直接进入读监听状态
-        if (hasRemain) {
-          readInvoker = EnhanceAsynchronousChannelGroup.MAX_INVOKER;
-        }
+      Runnable monitor = null;
+      if (lowMemory && readBuffer != null && readBuffer.position() == 0) {
+        readBuffer = null;
+        final CompletionHandler<Number, Object> handler = readCompletionHandler;
+        final Object attach = readAttachment;
+        monitor = () -> invokeCompleted(handler, EnhanceAsynchronousChannelProvider.READ_MONITOR_SIGNAL, attach, "read-callback");
       }
-
-      // 注册至异步线程
-      if (readSize == 0) {
-        if (switchThread) {
-          EnhanceAsynchronousChannelGroup.removeOps(readSelectionKey, SelectionKey.OP_READ);
-          group().commonWorker.addRegister(selector -> {
-            try {
-              channel.register(selector, SelectionKey.OP_READ, EnhanceAsynchronousSocketChannel.this);
-            } catch (ClosedChannelException e) {
-              doRead(true, false);
-            }
-          });
-          return;
-        }
-        // 释放内存
-        if (lowMemory && readBuffer.position() == 0) {
-          readBuffer = null;
-          readCompletionHandler.completed(EnhanceAsynchronousChannelProvider.READ_MONITOR_SIGNAL, readAttachment);
-        }
-      }
-
-      if (readSize != 0 || !hasRemain) {
-        CompletionHandler<Number, Object> completionHandler = readCompletionHandler;
-        Object attach = readAttachment;
-        resetRead();
-        completionHandler.completed(readSize, attach);
-
-        if (readCompletionHandler == null && readSelectionKey != null) {
-          EnhanceAsynchronousChannelGroup.removeOps(readSelectionKey, SelectionKey.OP_READ);
-        }
-      } else if (readSelectionKey == null) {
-        readWorker.addRegister(selector -> {
+      readWorker.addRegister(selector -> {
+        Throwable failure = null;
+        synchronized (readLock) {
+          if (readCompletionHandler == null || readGeneration != generation) return;
           try {
-            if (channel.isOpen()) {
-              readSelectionKey = channel.register(selector, SelectionKey.OP_READ, EnhanceAsynchronousSocketChannel.this);
-            }
-          } catch (ClosedChannelException e) {
-            if (readCompletionHandler != null) {
-              readCompletionHandler.failed(e, readAttachment);
-            }
-          }
-        });
-      } else {
-        EnhanceAsynchronousChannelGroup.interestOps(readWorker, readSelectionKey, SelectionKey.OP_READ);
-      }
-    } catch (Throwable e) {
-      if (readCompletionHandler == null) {
-        try {
-          close();
-        } catch (Throwable ignore) {
+            if (!channel.isOpen()) throw new ClosedChannelException();
+            readSelectionKey = channel.register(selector, SelectionKey.OP_READ, this);
+          } catch (Throwable error) { failure = error; }
         }
-      } else {
-        CompletionHandler<Number, Object> completionHandler = readCompletionHandler;
-        Object attach = readAttachment;
-        resetRead();
-        completionHandler.failed(e, attach);
-      }
-    } finally {
-      readInvoker = 0;
+        if (failure != null) failRead(failure, generation);
+      });
+      return monitor;
+    } catch (Throwable error) {
+      return takeReadCompletion(null, error);
     }
+  }
+
+  private Runnable takeReadCompletion(Number count, Throwable error) {
+    final CompletionHandler<Number, Object> handler = readCompletionHandler;
+    final Object attach = readAttachment;
+    resetRead();
+    try {
+      if (readSelectionKey != null && readSelectionKey.isValid())
+        EnhanceAsynchronousChannelGroup.removeOps(readSelectionKey, SelectionKey.OP_READ);
+    } catch (Throwable interestError) {
+      EnhanceAsynchronousChannelProvider.reportWorkerError("read-interest", interestError);
+    }
+    return () -> {
+      if (error == null) invokeCompleted(handler, count, attach, "read-callback");
+      else invokeFailed(handler, error, attach, "read-failed");
+    };
+  }
+
+  private void failRead(Throwable error, long generation) {
+    Runnable completion;
+    synchronized (readLock) {
+      if (readCompletionHandler == null || (generation >= 0 && readGeneration != generation)) return;
+      completion = takeReadCompletion(null, error);
+    }
+    completion.run();
   }
 
   private void resetRead() {
@@ -442,79 +451,89 @@ public class EnhanceAsynchronousSocketChannel extends AsynchronousSocketChannel 
     readBuffer = null;
   }
 
-  /**
-   * 执行异步写入操作
-   * 该方法实现了复杂的异步写入逻辑，包括以下功能：
-   * 1. 处理写入中断的情况
-   * 2. 支持非阻塞写入操作
-   * 3. 处理写入完成后的回调通知
-   * 4. 管理写入事件的注册
-   *
-   * @return 是否需要继续写入，true表示需要继续写入，false表示写入完成或需要等待
-   */
+  /** A zero-byte write waits for selector readiness instead of spinning. */
   public final boolean doWrite() {
-    // 处理写入中断的情况
-    if (writeInterrupted) {
-      writeInterrupted = false;
-      return false;
-    }
-    try {
-      // 尝试写入数据
-      int writeSize = channel.write(writeBuffer);
-
-      // 写入完成或缓冲区已空
-      if (writeSize != 0 || !writeBuffer.hasRemaining()) {
-        CompletionHandler<Number, Object> completionHandler = writeCompletionHandler;
-        Object attach = writeAttachment;
-        resetWrite();
-        writeInterrupted = true;
-        completionHandler.completed(writeSize, attach);
-        // 检查是否需要继续写入
-        if (!writeInterrupted) {
-          return true;
-        }
-        writeInterrupted = false;
-      } else {
-        // 注册写事件到选择器
-        SelectionKey commonSelectionKey = channel.keyFor(group().writeWorker.selector);
-        if (commonSelectionKey == null) {
-          // 首次注册写事件
-          group().writeWorker.addRegister(selector -> {
-            try {
-              if (channel.isOpen()) {
-                channel.register(selector, SelectionKey.OP_WRITE, EnhanceAsynchronousSocketChannel.this);
-              }
-            } catch (ClosedChannelException e) {
-              if (writeCompletionHandler != null) {
-                writeCompletionHandler.failed(e, writeAttachment);
-              }
-            }
-          });
-        } else {
-          // 更新已存在的选择键的兴趣事件
-          EnhanceAsynchronousChannelGroup.interestOps(group().writeWorker, commonSelectionKey, SelectionKey.OP_WRITE);
-        }
-      }
-    } catch (Throwable e) {
-      // 异常处理
-      if (writeCompletionHandler == null) {
-        e.printStackTrace();
-        try {
-          close();
-        } catch (IOException ioException) {
-          ioException.printStackTrace();
-        }
-      } else {
-        writeCompletionHandler.failed(e, writeAttachment);
-      }
-    }
+    if (writeWork.getAndIncrement() != 0) return false;
+    int missed = 1;
+    do {
+      Runnable completion;
+      synchronized (writeLock) { completion = writeOnce(); }
+      if (completion != null) completion.run();
+      missed = writeWork.addAndGet(-missed);
+    } while (missed != 0);
     return false;
+  }
+
+  private Runnable writeOnce() {
+    if (writeCompletionHandler == null) return null;
+    final long generation = writeGeneration;
+    try {
+      if (!channel.isOpen()) throw new ClosedChannelException();
+      Number count;
+      boolean done;
+      if (writeFile != null) {
+        if (writeFileCount > 0 && writeFilePosition >= writeFile.size())
+          throw new IOException("File ended before the requested region");
+        long size = writeFile.transferTo(writeFilePosition, Math.min(writeFileCount, 1024 * 1024), channel);
+        count = Long.valueOf(size);
+        done = size > 0 || writeFileCount == 0;
+      } else {
+        int size = channel.write(writeBuffer);
+        count = Integer.valueOf(size);
+        done = size > 0 || !writeBuffer.hasRemaining();
+      }
+      if (done) return takeWriteCompletion(count, null);
+      group().writeWorker.addRegister(selector -> {
+        Throwable failure = null;
+        synchronized (writeLock) {
+          if (writeCompletionHandler == null || writeGeneration != generation) return;
+          try {
+            if (!channel.isOpen()) throw new ClosedChannelException();
+            channel.register(selector, SelectionKey.OP_WRITE, this);
+          } catch (Throwable error) { failure = error; }
+        }
+        if (failure != null) failWrite(failure, generation);
+      });
+      return null;
+    } catch (Throwable error) {
+      return takeWriteCompletion(null, error);
+    }
+  }
+
+  private Runnable takeWriteCompletion(Number count, Throwable error) {
+    final CompletionHandler<Number, Object> handler = writeCompletionHandler;
+    final Object attach = writeAttachment;
+    resetWrite();
+    return () -> {
+      if (error == null) invokeCompleted(handler, count, attach, "write-callback");
+      else invokeFailed(handler, error, attach, "write-failed");
+    };
+  }
+
+  private void failWrite(Throwable error, long generation) {
+    Runnable completion;
+    synchronized (writeLock) {
+      if (writeCompletionHandler == null || (generation >= 0 && writeGeneration != generation)) return;
+      completion = takeWriteCompletion(null, error);
+    }
+    completion.run();
+  }
+
+  private static void invokeCompleted(CompletionHandler<Number, Object> handler, Number count, Object attach, String where) {
+    try { handler.completed(count, attach); }
+    catch (Throwable error) { EnhanceAsynchronousChannelProvider.reportWorkerError(where, error); }
+  }
+
+  private static void invokeFailed(CompletionHandler<Number, Object> handler, Throwable error, Object attach, String where) {
+    try { handler.failed(error, attach); }
+    catch (Throwable callbackError) { EnhanceAsynchronousChannelProvider.reportWorkerError(where, callbackError); }
   }
 
   private void resetWrite() {
     writeAttachment = null;
     writeCompletionHandler = null;
     writeBuffer = null;
+    writeFile = null;
   }
 
   @Override
